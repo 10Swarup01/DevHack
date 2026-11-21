@@ -25,6 +25,7 @@ import {
 import { soundFx } from "../lib/audioAtmosphere";
 import { AuthUser, DeveloperProfile, OrganizationProfile, UserRole } from "../types";
 import { DEFAULT_DEVELOPER, DEFAULT_ORGANIZATION } from "../lib/appState";
+import { supabaseSignIn, supabaseSignUp } from "../lib/supabaseClient";
 
 interface WelcomeStageProps {
   onAuthenticated: (user: AuthUser, destination: "landing" | "dashboard") => void;
@@ -103,8 +104,8 @@ export const WelcomeStage: React.FC<WelcomeStageProps> = ({
       : ""
   );
 
-  // Handle Developer Signup
-  const handleDeveloperSignup = (e: React.FormEvent) => {
+  // Handle Developer Signup (Live Supabase Auth & Profile)
+  const handleDeveloperSignup = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
 
@@ -126,35 +127,35 @@ export const WelcomeStage: React.FC<WelcomeStageProps> = ({
     setIsSubmitting(true);
     soundFx.playChime(880, "triangle", 0.06, 0.25);
 
-    setTimeout(() => {
-      const newDev: DeveloperProfile = {
-        fullName: devFullName,
-        email: devEmail,
-        phone: devPhone,
-        dob: devDob,
-        specialization: devSpecialization,
-        username: devUsername.toLowerCase().replace(/\s+/g, ""),
+    try {
+      const res = await supabaseSignUp(devEmail.trim(), devPassword, {
         role: "developer",
-        avatarUrl: devFullName.slice(0, 2).toUpperCase(),
-        tier: "Bronze",
-        bio: `Specializing in ${devSpecialization}. Exploring projects on Developers App.`,
-        stats: {
-          profileViews: 1,
-          projectViews: 0,
-          engagementRate: 100,
-          globalRank: "New Member",
-          totalEarnings: 0,
-          projectsCount: 0,
-        },
-      };
+        fullName: devFullName.trim(),
+        username: devUsername.trim(),
+        phone: devPhone.trim() || undefined,
+        dob: devDob || undefined,
+        specialization: devSpecialization,
+      });
 
+      soundFx.playChime(1000, "triangle", 0.06, 0.25);
+      if (res.requiresEmailConfirmation && !res.session) {
+        setFormError("Account created! Please check your email inbox to verify your account, then log in.");
+        setAuthView("login");
+        setLoginIdentifier(devEmail.trim());
+      } else {
+        onAuthenticated(res.user, "dashboard");
+      }
+    } catch (err: any) {
+      console.error("Developer registration error:", err);
+      setFormError(err.message || "Registration failed. Please check your credentials.");
+      soundFx.playChime(300, "sawtooth", 0.05, 0.2);
+    } finally {
       setIsSubmitting(false);
-      onAuthenticated(newDev, "landing");
-    }, 800);
+    }
   };
 
-  // Handle Organization Signup
-  const handleOrganizationSignup = (e: React.FormEvent) => {
+  // Handle Organization Signup (Live Supabase Auth & Profile)
+  const handleOrganizationSignup = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
 
@@ -176,78 +177,85 @@ export const WelcomeStage: React.FC<WelcomeStageProps> = ({
     setIsSubmitting(true);
     soundFx.playChime(880, "triangle", 0.06, 0.25);
 
-    setTimeout(() => {
-      const newOrg: OrganizationProfile = {
-        orgName,
-        ceoName: orgCeoName,
-        establishedDate: orgEstDate,
-        officialEmail: orgEmail,
-        orgType,
-        username: orgUsername.toLowerCase().replace(/\s+/g, ""),
+    try {
+      const res = await supabaseSignUp(orgEmail.trim(), orgPassword, {
         role: "organization",
-        avatarUrl: orgName.slice(0, 2).toUpperCase(),
-        bio: `${orgType} company scouting high-caliber engineers on Developers App.`,
-        stats: {
-          jobsPosted: 0,
-          developersHired: 0,
-          hackathonsSponsored: 0,
-          activeContracts: 0,
-        },
-      };
+        orgName: orgName.trim(),
+        ceoName: orgCeoName.trim() || undefined,
+        establishedDate: orgEstDate || undefined,
+        orgType,
+        username: orgUsername.trim(),
+      });
 
+      soundFx.playChime(1000, "triangle", 0.06, 0.25);
+      if (res.requiresEmailConfirmation && !res.session) {
+        setFormError("Organization registered! Please check your email inbox to verify your account, then log in.");
+        setAuthView("login");
+        setLoginIdentifier(orgEmail.trim());
+      } else {
+        onAuthenticated(res.user, "dashboard");
+      }
+    } catch (err: any) {
+      console.error("Organization registration error:", err);
+      setFormError(err.message || "Organization registration failed. Please check your credentials.");
+      soundFx.playChime(300, "sawtooth", 0.05, 0.2);
+    } finally {
       setIsSubmitting(false);
-      onAuthenticated(newOrg, "landing");
-    }, 800);
+    }
   };
 
-  // Handle Login
-  const handleLogin = (e: React.FormEvent) => {
+  // Handle Login (Live Supabase Auth & Profile Fetch)
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
 
-    if (!loginIdentifier || !loginPassword) {
-      setFormError("Please enter your login credentials.");
+    const emailInput = loginIdentifier.trim();
+    if (!emailInput || !loginPassword) {
+      setFormError("Please enter your account email and password.");
+      return;
+    }
+
+    if (!emailInput.includes("@")) {
+      setFormError("Please enter your registered email address.");
       return;
     }
 
     setIsSubmitting(true);
     soundFx.playChime(800, "sine", 0.05, 0.2);
 
-    setTimeout(() => {
+    try {
+      const res = await supabaseSignIn(emailInput, loginPassword);
+      soundFx.playChime(1000, "triangle", 0.06, 0.25);
+      onAuthenticated(res.user, "dashboard");
+    } catch (err: any) {
+      console.error("Supabase login error:", err);
+      setFormError(err.message || "Invalid email or password. Please verify your credentials.");
+      soundFx.playChime(300, "sawtooth", 0.05, 0.2);
+    } finally {
       setIsSubmitting(false);
-      if (selectedRole === "organization") {
-        onAuthenticated(
-          {
-            ...DEFAULT_ORGANIZATION,
-            orgName: loginIdentifier.includes("@")
-              ? "Verified Enterprise"
-              : loginIdentifier,
-          },
-          "dashboard"
-        );
-      } else {
-        onAuthenticated(
-          {
-            ...DEFAULT_DEVELOPER,
-            fullName: loginIdentifier.includes("@")
-              ? "Alex Rivers"
-              : loginIdentifier,
-          },
-          "dashboard"
-        );
-      }
-    }, 700);
+    }
   };
 
   // Development-only shortcuts (hidden in production per prompt rules)
   const isDevMode = typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
 
-  const handleQuickDemo = (role: UserRole) => {
+  const handleQuickDemo = async (role: UserRole) => {
     soundFx.playChime(950, "triangle", 0.05, 0.2);
-    if (role === "developer") {
-      onAuthenticated(DEFAULT_DEVELOPER, "dashboard");
-    } else {
-      onAuthenticated(DEFAULT_ORGANIZATION, "dashboard");
+    setIsSubmitting(true);
+    try {
+      // Connect to real Supabase test accounts
+      const targetEmail = role === "developer" ? "developer.test.a@developersapp.io" : "developer.test.b@developersapp.io";
+      const res = await supabaseSignIn(targetEmail, "Password123!Safe");
+      onAuthenticated(res.user, "dashboard");
+    } catch {
+      // Offline fallback only
+      if (role === "developer") {
+        onAuthenticated(DEFAULT_DEVELOPER, "dashboard");
+      } else {
+        onAuthenticated(DEFAULT_ORGANIZATION, "dashboard");
+      }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 

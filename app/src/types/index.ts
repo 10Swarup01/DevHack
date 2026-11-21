@@ -1,6 +1,7 @@
 export type UserRole = "developer" | "organization";
 
 export interface DeveloperProfile {
+  id?: string;
   fullName: string;
   email: string;
   phone: string;
@@ -35,6 +36,7 @@ export interface OrganizationContact {
 }
 
 export interface OrganizationProfile {
+  id?: string;
   orgName: string;
   ceoName: string;
   establishedDate: string;

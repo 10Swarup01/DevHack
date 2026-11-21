@@ -1,4 +1,4 @@
-import { FeedPost, PostComment, UserRole } from "../types";
+import { FeedPost, PostComment, UserRole, AuthUser, DeveloperProfile, OrganizationProfile } from "../types";
 
 export const SUPABASE_URL =
   process.env.NEXT_PUBLIC_SUPABASE_URL || "https://xubpvstkmckkegrkdamf.supabase.co";
@@ -17,8 +17,24 @@ export interface SupabaseAuthSession {
       username?: string;
       full_name?: string;
       role?: string;
+      [key: string]: any;
     };
   };
+}
+
+export interface SignUpMetadata {
+  role: "developer" | "organization";
+  fullName?: string;
+  username: string;
+  phone?: string;
+  dob?: string;
+  specialization?: string;
+  orgName?: string;
+  ceoName?: string;
+  establishedDate?: string;
+  orgType?: string;
+  avatarUrl?: string;
+  bio?: string;
 }
 
 export const getStoredSession = (): SupabaseAuthSession | null => {
@@ -71,7 +87,264 @@ export const formatRelativeTime = (isoString?: string): string => {
   }
 };
 
-// 1. Social Feed: Fetch Posts (with author profiles, comments, and like state)
+// --- AUTHENTICATION & PROFILE SERVICES ---
+
+export const mapProfileToAuthUser = (prof: any): AuthUser => {
+  const isOrg = prof.role === "organization";
+  if (isOrg) {
+    const orgProf: OrganizationProfile = {
+      id: prof.id,
+      orgName: prof.organization_name || prof.full_name || "Enterprise Organization",
+      ceoName: prof.ceo_name || "",
+      establishedDate: prof.established_date || "",
+      officialEmail: prof.email || "",
+      orgType: (prof.organization_type as any) || "Product-based",
+      username: prof.username || "org",
+      role: "organization",
+      avatarUrl: prof.avatar_url || ((prof.organization_name || prof.full_name || "OR").slice(0, 2).toUpperCase()),
+      bio: prof.bio || "",
+      stats: {
+        jobsPosted: 0,
+        developersHired: 0,
+        hackathonsSponsored: 0,
+        activeContracts: 0,
+      },
+    };
+    return orgProf;
+  }
+
+  const devProf: DeveloperProfile = {
+    id: prof.id,
+    fullName: prof.full_name || "Developer",
+    email: prof.email || "",
+    phone: prof.phone || "",
+    dob: prof.date_of_birth || "",
+    specialization: prof.specialization || "Full-Stack Developer",
+    username: prof.username || "dev",
+    role: "developer",
+    avatarUrl: prof.avatar_url || ((prof.full_name || "DE").slice(0, 2).toUpperCase()),
+    tier: (prof.tier as any) || "Bronze",
+    bio: prof.bio || `Specializing in ${prof.specialization || "Software Development"}.`,
+    skills: Array.isArray(prof.skills) ? prof.skills : [],
+    stats: {
+      profileViews: 1,
+      projectViews: 0,
+      engagementRate: 100,
+      globalRank: "Member",
+      totalEarnings: 0,
+      projectsCount: 0,
+    },
+  };
+  return devProf;
+};
+
+export const supabaseGetProfile = async (userId: string): Promise<AuthUser> => {
+  const session = getStoredSession();
+  const token = session?.access_token || SUPABASE_ANON_KEY;
+  const url = `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=*`;
+
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error(`Failed to fetch profile: ${res.status}`);
+  }
+
+  const list = await res.json();
+  if (!list || list.length === 0) {
+    if (session?.user?.id === userId && session.user.user_metadata) {
+      const meta = session.user.user_metadata;
+      return mapProfileToAuthUser({
+        id: userId,
+        full_name: meta.full_name || meta.organization_name || "Developer",
+        email: session.user.email,
+        username: meta.username || "user",
+        role: meta.role || "developer",
+        phone: meta.phone,
+        date_of_birth: meta.date_of_birth,
+        specialization: meta.specialization,
+        organization_name: meta.organization_name,
+        ceo_name: meta.ceo_name,
+        established_date: meta.established_date,
+        organization_type: meta.organization_type,
+      });
+    }
+    throw new Error("User profile not found in Supabase database");
+  }
+
+  return mapProfileToAuthUser(list[0]);
+};
+
+export const supabaseSignUp = async (
+  email: string,
+  password: string,
+  metadata: SignUpMetadata
+): Promise<{ user: AuthUser; session: SupabaseAuthSession | null; requiresEmailConfirmation?: boolean }> => {
+  const url = `${SUPABASE_URL}/auth/v1/signup`;
+  const cleanUsername = metadata.username.toLowerCase().replace(/[^a-z0-9_-]/g, "");
+
+  const payload = {
+    email: email.trim(),
+    password,
+    data: {
+      role: metadata.role,
+      full_name: metadata.fullName || metadata.orgName || "Developer",
+      username: cleanUsername,
+      phone: metadata.phone || null,
+      date_of_birth: metadata.dob || null,
+      specialization: metadata.specialization || null,
+      organization_name: metadata.orgName || null,
+      ceo_name: metadata.ceoName || null,
+      established_date: metadata.establishedDate || null,
+      organization_type: metadata.orgType || null,
+      avatar_url: metadata.avatarUrl || null,
+      bio: metadata.bio || null,
+    },
+  };
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.msg || data.message || data.error_description || "Signup failed");
+  }
+
+  if (data.access_token) {
+    const session: SupabaseAuthSession = {
+      access_token: data.access_token,
+      refresh_token: data.refresh_token,
+      user: data.user,
+    };
+    saveStoredSession(session);
+    try {
+      const profile = await supabaseGetProfile(data.user.id);
+      return { user: profile, session };
+    } catch {
+      const fallback = mapProfileToAuthUser({
+        id: data.user.id,
+        email,
+        ...payload.data,
+      });
+      return { user: fallback, session };
+    }
+  }
+
+  const fallbackUser = mapProfileToAuthUser({
+    id: data.id || data.user?.id || `temp-${Date.now()}`,
+    email,
+    ...payload.data,
+  });
+
+  return { user: fallbackUser, session: null, requiresEmailConfirmation: true };
+};
+
+export const supabaseSignIn = async (
+  email: string,
+  password: string
+): Promise<{ user: AuthUser; session: SupabaseAuthSession }> => {
+  const url = `${SUPABASE_URL}/auth/v1/token?grant_type=password`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ email: email.trim(), password }),
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error_description || data.msg || data.message || "Invalid email or password");
+  }
+
+  const session: SupabaseAuthSession = {
+    access_token: data.access_token,
+    refresh_token: data.refresh_token,
+    user: data.user,
+  };
+  saveStoredSession(session);
+
+  try {
+    const profile = await supabaseGetProfile(data.user.id);
+    return { user: profile, session };
+  } catch {
+    const meta = data.user.user_metadata || {};
+    const fallback = mapProfileToAuthUser({
+      id: data.user.id,
+      email: data.user.email,
+      full_name: meta.full_name || meta.organization_name || "Developer",
+      username: meta.username || "user",
+      role: meta.role || "developer",
+      specialization: meta.specialization,
+      organization_name: meta.organization_name,
+    });
+    return { user: fallback, session };
+  }
+};
+
+export const supabaseRestoreSession = async (): Promise<AuthUser | null> => {
+  const session = getStoredSession();
+  if (!session?.access_token || !session.user?.id) return null;
+
+  try {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      method: "GET",
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${session.access_token}`,
+      },
+    });
+
+    if (!res.ok) {
+      saveStoredSession(null);
+      return null;
+    }
+
+    const userData = await res.json();
+    const profile = await supabaseGetProfile(userData.id);
+    return profile;
+  } catch {
+    return null;
+  }
+};
+
+export const supabaseSignOut = async (): Promise<void> => {
+  const session = getStoredSession();
+  if (session?.access_token) {
+    try {
+      await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
+        method: "POST",
+        headers: {
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      });
+    } catch {}
+  }
+  saveStoredSession(null);
+  if (typeof window !== "undefined") {
+    try {
+      localStorage.removeItem("developers_app_user");
+      localStorage.removeItem("developers_app_stage");
+      localStorage.removeItem(AUTH_STORAGE_KEY);
+    } catch {}
+  }
+};
+
+// --- SOCIAL FEED SERVICES ---
+
 export const fetchSupabasePosts = async (currentUserId?: string): Promise<FeedPost[]> => {
   const url = `${SUPABASE_URL}/rest/v1/posts?select=*,profiles:user_id(id,username,full_name,avatar_url,role,specialization,organization_name,organization_type,tier),comments(id,content,created_at,user_id,profiles:user_id(id,username,full_name,avatar_url,role,tier)),post_likes(id,user_id)&order=created_at.desc`;
 
@@ -148,7 +421,6 @@ export const fetchSupabasePosts = async (currentUserId?: string): Promise<FeedPo
   });
 };
 
-// 2. Create Post
 export interface CreatePostParams {
   userId: string;
   content: string;
@@ -161,9 +433,16 @@ export interface CreatePostParams {
 }
 
 export const createSupabasePost = async (params: CreatePostParams): Promise<FeedPost> => {
+  const session = getStoredSession();
+  const effectiveUserId = session?.user?.id || params.userId;
+
+  if (!session?.access_token || !effectiveUserId) {
+    throw new Error("Authentication required: Please sign in to create a post.");
+  }
+
   const url = `${SUPABASE_URL}/rest/v1/posts`;
   const body = {
-    user_id: params.userId,
+    user_id: effectiveUserId,
     content: params.content,
     category: params.category || "Project",
     post_type: params.category || "Project",
@@ -189,7 +468,7 @@ export const createSupabasePost = async (params: CreatePostParams): Promise<Feed
   }
 
   const [created] = await res.json();
-  const allPosts = await fetchSupabasePosts(params.userId);
+  const allPosts = await fetchSupabasePosts(effectiveUserId);
   const found = allPosts.find((p) => p.id === created.id);
   if (found) return found;
 
@@ -217,15 +496,20 @@ export const createSupabasePost = async (params: CreatePostParams): Promise<Feed
   };
 };
 
-// 3. Toggle Like
 export const toggleSupabaseLike = async (
   postId: string,
   userId: string,
   currentIsLiked: boolean
 ): Promise<{ success: boolean; isLiked: boolean }> => {
+  const session = getStoredSession();
+  const effectiveUserId = session?.user?.id || userId;
+
+  if (!session?.access_token || !effectiveUserId) {
+    throw new Error("Authentication required: Please sign in to like posts.");
+  }
+
   if (currentIsLiked) {
-    // Delete like
-    const url = `${SUPABASE_URL}/rest/v1/post_likes?post_id=eq.${postId}&user_id=eq.${userId}`;
+    const url = `${SUPABASE_URL}/rest/v1/post_likes?post_id=eq.${postId}&user_id=eq.${effectiveUserId}`;
     const res = await fetch(url, {
       method: "DELETE",
       headers: getAuthHeaders(),
@@ -236,12 +520,11 @@ export const toggleSupabaseLike = async (
     }
     return { success: true, isLiked: false };
   } else {
-    // Insert like
     const url = `${SUPABASE_URL}/rest/v1/post_likes`;
     const res = await fetch(url, {
       method: "POST",
       headers: getAuthHeaders(),
-      body: JSON.stringify({ post_id: postId, user_id: userId }),
+      body: JSON.stringify({ post_id: postId, user_id: effectiveUserId }),
     });
     if (!res.ok) {
       const err = await res.text();
@@ -251,12 +534,18 @@ export const toggleSupabaseLike = async (
   }
 };
 
-// 4. Add Comment
 export const addSupabaseComment = async (
   postId: string,
   userId: string,
   content: string
 ): Promise<PostComment> => {
+  const session = getStoredSession();
+  const effectiveUserId = session?.user?.id || userId;
+
+  if (!session?.access_token || !effectiveUserId) {
+    throw new Error("Authentication required: Please sign in to comment.");
+  }
+
   const url = `${SUPABASE_URL}/rest/v1/comments`;
   const res = await fetch(url, {
     method: "POST",
@@ -266,7 +555,7 @@ export const addSupabaseComment = async (
     },
     body: JSON.stringify({
       post_id: postId,
-      user_id: userId,
+      user_id: effectiveUserId,
       content,
     }),
   });
@@ -287,9 +576,15 @@ export const addSupabaseComment = async (
   };
 };
 
-// 5. Delete Post (Owner only, guarded by RLS)
 export const deleteSupabasePost = async (postId: string, userId: string): Promise<boolean> => {
-  const url = `${SUPABASE_URL}/rest/v1/posts?id=eq.${postId}&user_id=eq.${userId}`;
+  const session = getStoredSession();
+  const effectiveUserId = session?.user?.id || userId;
+
+  if (!session?.access_token || !effectiveUserId) {
+    throw new Error("Authentication required: Please sign in to delete posts.");
+  }
+
+  const url = `${SUPABASE_URL}/rest/v1/posts?id=eq.${postId}&user_id=eq.${effectiveUserId}`;
   const res = await fetch(url, {
     method: "DELETE",
     headers: getAuthHeaders(),
@@ -301,7 +596,6 @@ export const deleteSupabasePost = async (postId: string, userId: string): Promis
   return true;
 };
 
-// 6. Upload Post Media to Supabase Storage: post-media bucket
 export const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp", "image/svg+xml"];
 export const ALLOWED_VIDEO_TYPES = ["video/mp4", "video/quicktime", "video/webm"];
 export const MAX_MEDIA_BYTES = 50 * 1024 * 1024; // 50MB
@@ -316,7 +610,9 @@ export const uploadSupabasePostMedia = async (
   file: File,
   userId: string
 ): Promise<UploadMediaResult> => {
-  // 1. File Type Validation
+  const session = getStoredSession();
+  const effectiveUserId = session?.user?.id || userId;
+
   const isImage = ALLOWED_IMAGE_TYPES.includes(file.type);
   const isVideo = ALLOWED_VIDEO_TYPES.includes(file.type);
 
@@ -326,21 +622,20 @@ export const uploadSupabasePostMedia = async (
     );
   }
 
-  // 2. File Size Validation
   if (file.size > MAX_MEDIA_BYTES) {
     throw new Error(`File exceeds maximum size of 50MB (${(file.size / (1024 * 1024)).toFixed(1)}MB).`);
   }
 
   const mediaType: "image" | "video" = isVideo ? "video" : "image";
   const cleanName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-  const filePath = `${userId}/${Date.now()}-${cleanName}`;
+  const filePath = `${effectiveUserId}/${Date.now()}-${cleanName}`;
 
   const uploadUrl = `${SUPABASE_URL}/storage/v1/object/post-media/${filePath}`;
   const res = await fetch(uploadUrl, {
     method: "POST",
     headers: {
       apikey: SUPABASE_ANON_KEY,
-      Authorization: `Bearer ${getStoredSession()?.access_token || SUPABASE_ANON_KEY}`,
+      Authorization: `Bearer ${session?.access_token || SUPABASE_ANON_KEY}`,
       "Content-Type": file.type,
       "x-upsert": "true",
     },

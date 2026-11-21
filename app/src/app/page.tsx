@@ -8,6 +8,7 @@ import { WelcomeStage } from "../components/WelcomeStage";
 import { DashboardStage } from "../components/DashboardStage";
 import { OrganizationBusinessHub } from "../components/organization/OrganizationBusinessHub";
 import { TransitionScreen } from "../components/TransitionScreen";
+import { supabaseRestoreSession, supabaseSignOut } from "../lib/supabaseClient";
 
 export type AppStage = "landing" | "account-selection" | "dashboard";
 
@@ -19,35 +20,53 @@ export default function Home() {
   const [targetStage, setTargetStage] = useState<AppStage>("dashboard");
   const [initialized, setInitialized] = useState(false);
 
-  // URL query parameter check & LocalStorage restore
+  // Real Supabase session restoration on mount and browser refresh
   useEffect(() => {
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const urlStage = params.get("stage") as AppStage | null;
+    let isMounted = true;
 
-      const savedUser = localStorage.getItem("developers_app_user");
-      const savedStage = localStorage.getItem("developers_app_stage") as AppStage | null;
+    const initAuth = async () => {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const urlStage = params.get("stage") as AppStage | null;
+        const savedStage = (localStorage.getItem("developers_app_stage") as AppStage | null) || "landing";
 
-      if (urlStage && (urlStage === "landing" || urlStage === "account-selection" || urlStage === "dashboard")) {
-        setStage(urlStage);
-      } else if (savedUser) {
-        const parsed = JSON.parse(savedUser);
-        setCurrentUser(parsed);
-        if (savedStage === "dashboard") {
-          // Returning authenticated user can go to feed
-          setStage("dashboard");
-        } else {
-          setStage("landing");
+        // 1. Check active Supabase authenticated session
+        const realProfile = await supabaseRestoreSession();
+        if (realProfile && isMounted) {
+          setCurrentUser(realProfile);
+          try {
+            localStorage.setItem("developers_app_user", JSON.stringify(realProfile));
+          } catch {}
+          setStage(urlStage || (savedStage === "dashboard" ? "dashboard" : "landing"));
+          return;
         }
-      } else {
-        // First-time visitor: strictly starts on the animated landing page
-        setStage("landing");
+
+        // 2. Fallback to saved local user if session is still valid
+        const savedUser = localStorage.getItem("developers_app_user");
+        if (savedUser && isMounted) {
+          try {
+            const parsed = JSON.parse(savedUser);
+            setCurrentUser(parsed);
+            setStage(urlStage || savedStage);
+            return;
+          } catch {}
+        }
+
+        // 3. Visitor starts on landing
+        if (isMounted) {
+          setStage(urlStage || "landing");
+        }
+      } catch {
+        if (isMounted) setStage("landing");
+      } finally {
+        if (isMounted) setInitialized(true);
       }
-    } catch {
-      setStage("landing");
-    } finally {
-      setInitialized(true);
-    }
+    };
+
+    initAuth();
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   // Save state on authentication
@@ -89,12 +108,9 @@ export default function Home() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await supabaseSignOut();
     setCurrentUser(null);
-    try {
-      localStorage.removeItem("developers_app_user");
-      localStorage.removeItem("developers_app_stage");
-    } catch {}
     setStage("landing");
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -107,6 +123,15 @@ export default function Home() {
     } catch {}
     window.scrollTo({ top: 0, behavior: "auto" });
   };
+
+  // Loading splash while verifying Supabase session
+  if (!initialized) {
+    return (
+      <div className="min-h-screen bg-[#070b14] flex items-center justify-center">
+        <div className="w-8 h-8 rounded-full border-2 border-cyan-500 border-t-transparent animate-spin" />
+      </div>
+    );
+  }
 
   // Active Transition Overlay ("Making a Leap from Ordinary to Dev...")
   if (isTransitioning) {
@@ -131,7 +156,7 @@ export default function Home() {
   }
 
   // PAGE TWO: ACCOUNT SELECTION & AUTHENTICATION (Reference Image 2: Promethist)
-  if (stage === "account-selection") {
+  if (stage === "account-selection" || (stage === "dashboard" && !currentUser)) {
     return (
       <WelcomeStage
         onAuthenticated={handleAuthenticated}
@@ -161,7 +186,7 @@ export default function Home() {
 
   return (
     <DashboardStage
-      currentUser={currentUser || DEFAULT_DEVELOPER}
+      currentUser={currentUser!}
       onSwitchUser={(newUser) => {
         setCurrentUser(newUser);
         try {

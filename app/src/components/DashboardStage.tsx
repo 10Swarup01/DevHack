@@ -223,9 +223,9 @@ export const DashboardStage: React.FC<DashboardStageProps> = ({
   const mediaInputRef = useRef<HTMLInputElement>(null);
 
   const currentUserId =
-    (currentUser as any).id ||
+    (currentUser as any)?.id ||
     getStoredSession()?.user?.id ||
-    "f1ed1d37-33d5-481d-a098-54ea7066b5e8";
+    "";
 
   const loadPosts = async (quiet = false) => {
     if (!quiet) setFeedLoading(true);
@@ -303,6 +303,11 @@ export const DashboardStage: React.FC<DashboardStageProps> = ({
 
   // Like Toggle (Live Supabase)
   const handleToggleLike = async (postId: string) => {
+    const session = getStoredSession();
+    if (!session?.access_token || !currentUserId) {
+      showToast("Please log in to like posts.");
+      return;
+    }
     soundFx.playChime(700, "sine", 0.03, 0.1);
     const targetPost = posts.find((p) => p.id === postId);
     if (!targetPost) return;
@@ -352,6 +357,12 @@ export const DashboardStage: React.FC<DashboardStageProps> = ({
   const handleAddCardComment = async (postId: string) => {
     const text = cardCommentInputs[postId]?.trim();
     if (!text) return;
+
+    const session = getStoredSession();
+    if (!session?.access_token || !currentUserId) {
+      showToast("Please log in to publish a comment.");
+      return;
+    }
 
     soundFx.playChime(850, "triangle", 0.04, 0.15);
     setCardCommentInputs((prev) => ({ ...prev, [postId]: "" }));
@@ -403,6 +414,12 @@ export const DashboardStage: React.FC<DashboardStageProps> = ({
     e.preventDefault();
     if (!newPostContent.trim() && !selectedMedia) return;
 
+    const session = getStoredSession();
+    if (!session?.access_token || !currentUserId) {
+      showToast("Please log in to your account to broadcast posts.");
+      return;
+    }
+
     setIsSubmittingPost(true);
     soundFx.playChime(900, "triangle", 0.05, 0.2);
 
@@ -445,6 +462,11 @@ export const DashboardStage: React.FC<DashboardStageProps> = ({
   // Delete post (Owner only)
   const handleDeletePost = async (postId: string) => {
     if (!confirm("Are you sure you want to delete this post?")) return;
+    const session = getStoredSession();
+    if (!session?.access_token || !currentUserId) {
+      showToast("Please log in to manage your posts.");
+      return;
+    }
     soundFx.playChime(500, "sine", 0.03, 0.1);
 
     setPosts((prev) => prev.filter((p) => p.id !== postId));
