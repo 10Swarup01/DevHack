@@ -32,6 +32,26 @@ Runs the original Next.js 14 project on Google Colab with an automated build, 19
 
 ## Technical Notes
 
-- **Zero API Key Leakage:** No environment variables or external secrets are required or exposed.
+- **Supabase Integration:** Full database and authentication support with preconfigured `.env.example` and GitHub Environment CI workflow.
 - **Full Integrity:** `Developers_App_Colab.ipynb` automatically executes `sha256sum -c ../SHA256SUMS.txt --quiet` inside `app/` prior to building.
 - **Tunnel URL:** Public access is securely proxied through an ephemeral Cloudflare quick tunnel during runtime.
+
+---
+
+## Supabase Configuration & GitHub Environment
+
+The application connects to Supabase for authentication, developer profiles, project showcase, and PostgreSQL database migrations (`app/supabase/migrations/`).
+
+### Environment Variables
+| Variable | Description | Value |
+| :--- | :--- | :--- |
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase Project URL | `https://xubpvstkmckkegrkdamf.supabase.co` |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase Publishable / Anon Key | `sb_publishable_6seUOer2KLe9RXSYx8iMJQ_uJO7Cp8-` |
+
+### Setting Up in GitHub Environment
+1. Go to **Settings → Environments** on your GitHub repository.
+2. Click **New environment** and create `production`.
+3. Under **Environment variables**, click **Add variable**:
+   - `NEXT_PUBLIC_SUPABASE_URL`: `https://xubpvstkmckkegrkdamf.supabase.co`
+   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`: `sb_publishable_6seUOer2KLe9RXSYx8iMJQ_uJO7Cp8-`
+4. The automated GitHub Actions workflow (`.github/workflows/ci.yml`) automatically builds and validates the Next.js application using these environment variables.
