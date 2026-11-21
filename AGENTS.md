@@ -8,9 +8,9 @@ All AI agents and developers interacting with this repository MUST strictly foll
 
 ## 1. Fixed Repository Configuration
 
-- **GitHub Repository:** `10Swarup01/developer-s-app`
-- **GitHub URL:** [https://github.com/10Swarup01/developer-s-app](https://github.com/10Swarup01/developer-s-app)
-- **Git Remote:** `origin` pointing to `https://github.com/10Swarup01/developer-s-app.git`
+- **GitHub Repository:** `10Swarup01/DevHack`
+- **GitHub URL:** [https://github.com/10Swarup01/DevHack](https://github.com/10Swarup01/DevHack)
+- **Git Remote:** `origin` pointing to `https://github.com/10Swarup01/DevHack.git` (synchronized with `10Swarup01/developer-s-app.git`)
 - **Primary Branch:** `main`
 - **Google Colab Notebook URL:** [https://colab.research.google.com/drive/1VP_dsxBZvoSvCPRypuwxcEx6MB8X62Jt#scrollTo=6aa2a16b](https://colab.research.google.com/drive/1VP_dsxBZvoSvCPRypuwxcEx6MB8X62Jt#scrollTo=6aa2a16b)
 - **Application Directory:** `app/` (Next.js 14 full-stack app)
@@ -112,7 +112,7 @@ print(f'Updated SHA256SUMS.txt with {len(manifest)} entries.')
 
 1. **Pre-commit Verification:**
    - Verify `SHA256SUMS.txt` against `app/`.
-   - Verify `Developers_App_Colab.ipynb` is valid JSON and has `REPO = "10Swarup01/developer-s-app"`, `BRANCH = "main"`, and `USE_ZIP = False`.
+   - Verify `Developers_App_Colab.ipynb` is valid JSON and has `REPO = "10Swarup01/DevHack"`, `BRANCH = "main"`, and `USE_ZIP = False`.
    - Verify `README.md` and `AGENTS.md` contain accurate links.
 2. **Stage Changes:**
    ```bash
@@ -143,6 +143,7 @@ print(f'Updated SHA256SUMS.txt with {len(manifest)} entries.')
 
 ## 7. Required Links
 
-When summarizing or reporting changes to the user, always provide both direct links:
-- **GitHub Repository:** [https://github.com/10Swarup01/developer-s-app](https://github.com/10Swarup01/developer-s-app)
+When summarizing or reporting changes to the user, always provide direct links:
+- **GitHub Repository (DevHack):** [https://github.com/10Swarup01/DevHack](https://github.com/10Swarup01/DevHack)
+- **GitHub Repository (developer-s-app):** [https://github.com/10Swarup01/developer-s-app](https://github.com/10Swarup01/developer-s-app)
 - **Google Colab Notebook:** [https://colab.research.google.com/drive/1VP_dsxBZvoSvCPRypuwxcEx6MB8X62Jt#scrollTo=6aa2a16b](https://colab.research.google.com/drive/1VP_dsxBZvoSvCPRypuwxcEx6MB8X62Jt#scrollTo=6aa2a16b)
