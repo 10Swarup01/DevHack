@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Code2,
   Home,
@@ -35,7 +35,20 @@ import {
   Store,
   ChevronRight,
   UserPlus,
+  Image as ImageIcon,
+  Film,
+  Trash2,
+  Loader2,
 } from "lucide-react";
+import {
+  fetchSupabasePosts,
+  createSupabasePost,
+  toggleSupabaseLike,
+  addSupabaseComment,
+  deleteSupabasePost,
+  uploadSupabasePostMedia,
+  getStoredSession,
+} from "../lib/supabaseClient";
 import { soundFx } from "../lib/audioAtmosphere";
 import { AuthUser, FeedPost, PostComment, ChatThread, Project, DeveloperProfile } from "../types";
 import { INITIAL_POSTS, INITIAL_CHATS, DEFAULT_DEVELOPER, DEFAULT_ORGANIZATION } from "../lib/appState";
@@ -192,12 +205,71 @@ export const DashboardStage: React.FC<DashboardStageProps> = ({
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   // Feed & Social Interaction states
-  const [posts, setPosts] = useState<FeedPost[]>(INITIAL_POSTS);
+  const [posts, setPosts] = useState<FeedPost[]>([]);
   const [feedFilter, setFeedFilter] = useState<string>("All");
   const [newPostContent, setNewPostContent] = useState("");
   const [newPostCategory, setNewPostCategory] = useState<FeedPost["category"]>("Project");
   const [newPostCodeSnippet, setNewPostCodeSnippet] = useState("");
   const [showCodeInput, setShowCodeInput] = useState(false);
+
+  // Live Supabase Feed & Storage states
+  const [feedLoading, setFeedLoading] = useState(true);
+  const [feedError, setFeedError] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isSubmittingPost, setIsSubmittingPost] = useState(false);
+  const [selectedMedia, setSelectedMedia] = useState<File | null>(null);
+  const [mediaPreviewUrl, setMediaPreviewUrl] = useState<string | null>(null);
+  const [mediaType, setMediaType] = useState<"none" | "image" | "video">("none");
+  const mediaInputRef = useRef<HTMLInputElement>(null);
+
+  const currentUserId =
+    (currentUser as any).id ||
+    getStoredSession()?.user?.id ||
+    "f1ed1d37-33d5-481d-a098-54ea7066b5e8";
+
+  const loadPosts = async (quiet = false) => {
+    if (!quiet) setFeedLoading(true);
+    setFeedError(null);
+    try {
+      const livePosts = await fetchSupabasePosts(currentUserId);
+      setPosts(livePosts);
+    } catch (err: any) {
+      console.error("Supabase live posts fetch error:", err);
+      if (err.message?.includes("PGRST205") || err.message?.includes("Could not find the table")) {
+        setFeedError("Supabase tables 'posts' not yet found in schema. Please apply migration 20261121_social_feed_storage.sql in your Supabase SQL Editor.");
+      } else {
+        setFeedError(err.message || "Failed to load posts from Supabase");
+      }
+    } finally {
+      setFeedLoading(false);
+      setIsRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    loadPosts();
+  }, []);
+
+  const handleMediaSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 50 * 1024 * 1024) {
+      showToast("File size exceeds 50MB limit");
+      return;
+    }
+    const isVid = file.type.startsWith("video/");
+    setSelectedMedia(file);
+    setMediaType(isVid ? "video" : "image");
+    setMediaPreviewUrl(URL.createObjectURL(file));
+  };
+
+  const handleRemoveMedia = () => {
+    setSelectedMedia(null);
+    if (mediaPreviewUrl) URL.revokeObjectURL(mediaPreviewUrl);
+    setMediaPreviewUrl(null);
+    setMediaType("none");
+    if (mediaInputRef.current) mediaInputRef.current.value = "";
+  };
 
   // Inline comment input map & expansion (Section 5E)
   const [cardCommentInputs, setCardCommentInputs] = useState<Record<string, string>>({});
@@ -229,22 +301,44 @@ export const DashboardStage: React.FC<DashboardStageProps> = ({
     setTimeout(() => setToastMessage(null), 2500);
   };
 
-  // Like Toggle
-  const handleToggleLike = (postId: string) => {
+  // Like Toggle (Live Supabase)
+  const handleToggleLike = async (postId: string) => {
     soundFx.playChime(700, "sine", 0.03, 0.1);
+    const targetPost = posts.find((p) => p.id === postId);
+    if (!targetPost) return;
+    const currentlyLiked = Boolean(targetPost.isLiked);
+
     setPosts((prev) =>
       prev.map((p) => {
         if (p.id === postId) {
-          const isLiked = !p.isLiked;
           return {
             ...p,
-            isLiked,
-            likes: isLiked ? p.likes + 1 : p.likes - 1,
+            isLiked: !currentlyLiked,
+            likes: !currentlyLiked ? p.likes + 1 : Math.max(p.likes - 1, 0),
           };
         }
         return p;
       })
     );
+
+    try {
+      await toggleSupabaseLike(postId, currentUserId, currentlyLiked);
+    } catch (err: any) {
+      console.error("Supabase like error:", err);
+      setPosts((prev) =>
+        prev.map((p) => {
+          if (p.id === postId) {
+            return {
+              ...p,
+              isLiked: currentlyLiked,
+              likes: currentlyLiked ? p.likes : Math.max(p.likes - 1, 0),
+            };
+          }
+          return p;
+        })
+      );
+      showToast("Like action failed on server");
+    }
   };
 
   // Share action
@@ -254,18 +348,20 @@ export const DashboardStage: React.FC<DashboardStageProps> = ({
     showToast("Shareable project link copied to clipboard!");
   };
 
-  // Inline Comment submission on card
-  const handleAddCardComment = (postId: string) => {
+  // Inline Comment submission on card (Live Supabase)
+  const handleAddCardComment = async (postId: string) => {
     const text = cardCommentInputs[postId]?.trim();
     if (!text) return;
 
     soundFx.playChime(850, "triangle", 0.04, 0.15);
+    setCardCommentInputs((prev) => ({ ...prev, [postId]: "" }));
+    setExpandedComments((prev) => ({ ...prev, [postId]: true }));
 
-    const newComment: PostComment = {
-      id: `c-${Date.now()}`,
+    const optimisticComment: PostComment = {
+      id: `c-temp-${Date.now()}`,
       authorName: currentUser.role === "developer" ? currentUser.fullName : currentUser.orgName,
       authorRole: currentUser.role === "developer" ? `${currentUser.tier} Developer` : "Organization",
-      avatar: currentUser.avatarUrl || "DEV",
+      avatar: currentUser.avatarUrl || (currentUser.role === "developer" ? currentUser.fullName.slice(0, 2).toUpperCase() : "ORG"),
       content: text,
       timestamp: "Just now",
     };
@@ -275,48 +371,92 @@ export const DashboardStage: React.FC<DashboardStageProps> = ({
         if (p.id === postId) {
           return {
             ...p,
-            comments: [...p.comments, newComment],
+            comments: [...p.comments, optimisticComment],
           };
         }
         return p;
       })
     );
 
-    setCardCommentInputs((prev) => ({ ...prev, [postId]: "" }));
-    setExpandedComments((prev) => ({ ...prev, [postId]: true }));
-    showToast("Comment published directly to card!");
+    try {
+      const realComment = await addSupabaseComment(postId, currentUserId, text);
+      setPosts((prev) =>
+        prev.map((p) => {
+          if (p.id === postId) {
+            return {
+              ...p,
+              comments: p.comments.map((c) => (c.id === optimisticComment.id ? realComment : c)),
+            };
+          }
+          return p;
+        })
+      );
+      showToast("Comment published directly to card!");
+    } catch (err: any) {
+      console.error("Supabase comment error:", err);
+      showToast("Failed to publish comment: " + err.message);
+    }
   };
 
-  // Create new post
-  const handleCreatePost = (e: React.FormEvent) => {
+  // Create new post (Live Supabase & Storage upload)
+  const handleCreatePost = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newPostContent.trim()) return;
+    if (!newPostContent.trim() && !selectedMedia) return;
 
+    setIsSubmittingPost(true);
     soundFx.playChime(900, "triangle", 0.05, 0.2);
 
-    const newPost: FeedPost = {
-      id: `post-${Date.now()}`,
-      authorName: currentUser.role === "developer" ? currentUser.fullName : currentUser.orgName,
-      authorHandle: `@${currentUser.username}`,
-      authorRole: currentUser.role === "developer" ? currentUser.specialization : currentUser.orgType,
-      authorType: currentUser.role,
-      authorAvatar: currentUser.avatarUrl || "DEV",
-      category: newPostCategory,
-      timestamp: "Just now",
-      content: newPostContent.trim(),
-      codeSnippet: newPostCodeSnippet.trim() || undefined,
-      likes: 0,
-      isLiked: false,
-      shares: 0,
-      comments: [],
-      badge: "RECENT LAUNCH",
-    };
+    try {
+      let uploadedMediaUrls: string[] = [];
+      let finalMediaType: "none" | "image" | "video" = "none";
 
-    setPosts([newPost, ...posts]);
-    setNewPostContent("");
-    setNewPostCodeSnippet("");
-    setShowCodeInput(false);
-    showToast("Post broadcasted across Developers App network!");
+      if (selectedMedia) {
+        showToast("Uploading media to Supabase storage...");
+        const uploadRes = await uploadSupabasePostMedia(selectedMedia, currentUserId);
+        uploadedMediaUrls = [uploadRes.url];
+        finalMediaType = uploadRes.mediaType;
+      }
+
+      const created = await createSupabasePost({
+        userId: currentUserId,
+        content: newPostContent.trim(),
+        category: newPostCategory,
+        codeSnippet: newPostCodeSnippet.trim() || undefined,
+        mediaUrls: uploadedMediaUrls,
+        mediaType: finalMediaType,
+        badge: "RECENT LAUNCH",
+        visibility: "public",
+      });
+
+      setPosts((prev) => [created, ...prev]);
+      setNewPostContent("");
+      setNewPostCodeSnippet("");
+      handleRemoveMedia();
+      setShowCodeInput(false);
+      showToast("Post broadcasted across Developers App network!");
+    } catch (err: any) {
+      console.error("Supabase post creation error:", err);
+      showToast(err.message || "Failed to create post on Supabase");
+    } finally {
+      setIsSubmittingPost(false);
+    }
+  };
+
+  // Delete post (Owner only)
+  const handleDeletePost = async (postId: string) => {
+    if (!confirm("Are you sure you want to delete this post?")) return;
+    soundFx.playChime(500, "sine", 0.03, 0.1);
+
+    setPosts((prev) => prev.filter((p) => p.id !== postId));
+
+    try {
+      await deleteSupabasePost(postId, currentUserId);
+      showToast("Post deleted successfully!");
+    } catch (err: any) {
+      console.error("Supabase delete error:", err);
+      showToast("Failed to delete post: " + err.message);
+      loadPosts(true);
+    }
   };
 
   // Chat message send
@@ -878,7 +1018,7 @@ export const DashboardStage: React.FC<DashboardStageProps> = ({
                   </div>
                 </div>
 
-                {/* 2. POST COMPOSER (Section 5D) */}
+                {/* 2. POST COMPOSER (Live Supabase & Storage Integration) */}
                 <div className="p-5 rounded-2xl bg-[#242424] border border-white/[0.08] shadow-sm space-y-4">
                   <div className="flex items-start gap-3.5">
                     <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-[#3478F6] to-[#8B5CF6] flex items-center justify-center font-bold text-xs text-white shrink-0 mt-0.5">
@@ -889,9 +1029,37 @@ export const DashboardStage: React.FC<DashboardStageProps> = ({
                         rows={2}
                         value={newPostContent}
                         onChange={(e) => setNewPostContent(e.target.value)}
-                        placeholder="What's happening in your developer journey?"
+                        placeholder="What's happening in your developer journey? Share a project, code snippet, or media..."
                         className="w-full p-3 bg-[#1B1B1B] border border-white/[0.08] rounded-xl text-xs text-white placeholder-[#A3A3A3] focus:outline-none focus:border-[#3478F6] resize-none transition-colors"
                       />
+
+                      {/* Hidden File Input for Storage */}
+                      <input
+                        type="file"
+                        ref={mediaInputRef}
+                        onChange={handleMediaSelect}
+                        accept="image/jpeg,image/png,image/gif,image/webp,image/svg+xml,video/mp4,video/quicktime,video/webm"
+                        className="hidden"
+                      />
+
+                      {/* Media Preview Box */}
+                      {mediaPreviewUrl && (
+                        <div className="relative rounded-xl overflow-hidden border border-white/[0.1] bg-black/40 max-w-sm">
+                          {mediaType === "video" ? (
+                            <video src={mediaPreviewUrl} className="w-full h-36 object-cover" controls />
+                          ) : (
+                            <img src={mediaPreviewUrl} alt="Preview" className="w-full h-36 object-cover" />
+                          )}
+                          <button
+                            type="button"
+                            onClick={handleRemoveMedia}
+                            className="absolute top-2 right-2 p-1.5 rounded-full bg-black/70 hover:bg-red-600 text-white transition-colors"
+                            title="Remove media"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
 
                       {showCodeInput && (
                         <div className="space-y-1">
@@ -913,6 +1081,19 @@ export const DashboardStage: React.FC<DashboardStageProps> = ({
                   {/* Quick Action Buttons & Submit */}
                   <div className="flex items-center justify-between pt-3 border-t border-white/[0.06] text-xs flex-wrap gap-2">
                     <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => mediaInputRef.current?.click()}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-mono transition-colors ${
+                          selectedMedia
+                            ? "bg-[#8B5CF6]/20 text-[#A78BFA] border border-[#8B5CF6]/40"
+                            : "bg-white/[0.04] text-[#A3A3A3] hover:text-white"
+                        }`}
+                      >
+                        <ImageIcon className="w-3.5 h-3.5" />
+                        <span>{selectedMedia ? (mediaType === "video" ? "Video attached" : "Photo attached") : "Photo / Video"}</span>
+                      </button>
+
                       <button
                         type="button"
                         onClick={() => setShowCodeInput(!showCodeInput)}
@@ -940,42 +1121,84 @@ export const DashboardStage: React.FC<DashboardStageProps> = ({
                     <button
                       type="button"
                       onClick={handleCreatePost}
-                      disabled={!newPostContent.trim()}
+                      disabled={(!newPostContent.trim() && !selectedMedia) || isSubmittingPost}
                       className="px-5 py-2 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-[#3478F6] to-[#8B5CF6] disabled:opacity-40 hover:shadow-md transition-all flex items-center gap-1.5"
                     >
-                      <Send className="w-3.5 h-3.5" />
-                      <span>Post</span>
+                      {isSubmittingPost ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Publishing...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Send className="w-3.5 h-3.5" />
+                          <span>Post</span>
+                        </>
+                      )}
                     </button>
                   </div>
                 </div>
 
-                {/* 3. CATEGORY FILTER PILLS */}
-                <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs">
-                  {["All", "Projects", "Jobs", "Hackathons", "Achievements"].map((filter) => (
-                    <button
-                      key={filter}
-                      onClick={() => {
-                        soundFx.playChime(600, "sine", 0.02, 0.08);
-                        setFeedFilter(filter);
-                      }}
-                      className={`px-4 py-2 rounded-full font-bold transition-all whitespace-nowrap ${
-                        feedFilter === filter
-                          ? "bg-white/[0.15] text-white border border-white/[0.2] shadow-sm"
-                          : "text-[#A3A3A3] hover:text-white bg-[#242424] border border-white/[0.06]"
-                      }`}
-                    >
-                      {filter}
-                    </button>
-                  ))}
+                {/* 3. CATEGORY FILTER PILLS & REFRESH */}
+                <div className="flex items-center justify-between gap-2 overflow-x-auto pb-1 text-xs">
+                  <div className="flex items-center gap-2">
+                    {["All", "Projects", "Jobs", "Hackathons", "Achievements"].map((filter) => (
+                      <button
+                        key={filter}
+                        onClick={() => {
+                          soundFx.playChime(600, "sine", 0.02, 0.08);
+                          setFeedFilter(filter);
+                        }}
+                        className={`px-4 py-2 rounded-full font-bold transition-all whitespace-nowrap ${
+                          feedFilter === filter
+                            ? "bg-white/[0.15] text-white border border-white/[0.2] shadow-sm"
+                            : "text-[#A3A3A3] hover:text-white bg-[#242424] border border-white/[0.06]"
+                        }`}
+                      >
+                        {filter}
+                      </button>
+                    ))}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundFx.playChime(600, "sine", 0.02, 0.08);
+                      setIsRefreshing(true);
+                      loadPosts(true);
+                    }}
+                    className="px-3.5 py-2 rounded-full text-xs font-mono text-[#22D3EE] hover:text-white bg-[#22D3EE]/10 hover:bg-[#22D3EE]/20 border border-[#22D3EE]/30 flex items-center gap-1.5 transition-colors shrink-0 ml-auto"
+                    title="Refresh feed from Supabase"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
+                    <span>Sync Feed</span>
+                  </button>
                 </div>
 
-                {/* 4. FEED POSTS STREAM (Section 5E) */}
+                {/* 4. FEED POSTS STREAM (Section 5E - Live Supabase) */}
                 <div className="space-y-5">
-                  {filteredPosts.length === 0 ? (
+                  {feedLoading ? (
+                    <div className="p-12 text-center rounded-3xl bg-[#242424] border border-white/[0.08] space-y-3">
+                      <Loader2 className="w-8 h-8 text-[#3478F6] animate-spin mx-auto" />
+                      <div className="text-sm font-bold text-white">Loading Live Feed from Supabase...</div>
+                      <p className="text-xs text-[#A3A3A3]">Connecting to database and fetching social posts...</p>
+                    </div>
+                  ) : feedError ? (
+                    <div className="p-8 text-center rounded-3xl bg-red-500/10 border border-red-500/20 space-y-3">
+                      <div className="text-sm font-bold text-red-400">Database Connection Status</div>
+                      <p className="text-xs text-red-300 max-w-md mx-auto">{feedError}</p>
+                      <button
+                        onClick={() => loadPosts()}
+                        className="px-4 py-2 rounded-xl bg-red-500/20 hover:bg-red-500/30 text-white text-xs font-semibold"
+                      >
+                        Retry Feed Connection
+                      </button>
+                    </div>
+                  ) : filteredPosts.length === 0 ? (
                     <div className="p-12 text-center rounded-3xl bg-[#242424] border border-white/[0.08] space-y-3">
                       <Search className="w-8 h-8 text-[#A3A3A3] mx-auto" />
-                      <div className="text-sm font-bold text-white">No posts matching your search</div>
-                      <p className="text-xs text-[#A3A3A3]">Try searching for "sandbox", "hackathon", or "AI".</p>
+                      <div className="text-sm font-bold text-white">No posts published yet in this category</div>
+                      <p className="text-xs text-[#A3A3A3]">Be the first developer to broadcast an update, code preview, or achievement!</p>
                     </div>
                   ) : (
                     filteredPosts.map((post) => {
@@ -1016,17 +1239,52 @@ export const DashboardStage: React.FC<DashboardStageProps> = ({
                               </div>
                             </div>
 
-                            {post.badge && (
-                              <span className={`text-[10px] font-mono font-bold px-2.5 py-1 rounded-full border ${badgeColor} shrink-0`}>
-                                {post.badge}
-                              </span>
-                            )}
+                            <div className="flex items-center gap-2">
+                              {post.badge && (
+                                <span className={`text-[10px] font-mono font-bold px-2.5 py-1 rounded-full border ${badgeColor} shrink-0`}>
+                                  {post.badge}
+                                </span>
+                              )}
+                              {((post.userId && post.userId === currentUserId) || post.authorHandle === `@${currentUser.username}`) && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeletePost(post.id)}
+                                  className="p-1.5 rounded-lg text-zinc-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                                  title="Delete your post"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
                           </div>
 
                           {/* Post Content */}
-                          <p className="text-sm text-zinc-200 leading-relaxed">
+                          <p className="text-sm text-zinc-200 leading-relaxed whitespace-pre-wrap">
                             {post.content}
                           </p>
+
+                          {/* Media Display: Image or Video */}
+                          {post.image && (
+                            <div className="rounded-2xl overflow-hidden border border-white/[0.08] max-h-96 bg-black/40">
+                              <img
+                                src={post.image}
+                                alt="Post media attachment"
+                                className="w-full h-auto object-cover max-h-96"
+                                loading="lazy"
+                              />
+                            </div>
+                          )}
+
+                          {post.videoUrl && (
+                            <div className="rounded-2xl overflow-hidden border border-white/[0.08] bg-black/60">
+                              <video
+                                src={post.videoUrl}
+                                controls
+                                className="w-full max-h-96"
+                                preload="metadata"
+                              />
+                            </div>
+                          )}
 
                           {/* Runnable Code Sandbox Block */}
                           {post.codeSnippet && (

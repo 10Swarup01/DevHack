@@ -237,12 +237,17 @@ export interface FeedPost {
   content: string;
   codeSnippet?: string;
   image?: string;
+  videoUrl?: string;
+  mediaUrls?: string[];
+  mediaType?: "none" | "image" | "video";
   projectUrl?: string;
   likes: number;
   isLiked?: boolean;
   comments: PostComment[];
   shares: number;
   badge?: string;
+  userId?: string;
+  visibility?: "public" | "private";
 }
 
 export interface ChatMessage {
